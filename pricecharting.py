@@ -25,38 +25,39 @@ class PriceChartingProvider(BaseProvider):
     }
 
     async def _search_pokemontcg(self, query: str, limit: int = 8) -> list[CardResult]:
-        """Free search of all printed Pokémon cards via the public API."""
+        """Free search of all printed Pokémon cards via TCGdex (no key needed)."""
         results = []
-        url = "https://api.pokemontcg.io/v2/cards"
-        # Clean the query a bit
         clean = " ".join(query.split())
-        # Try several query styles so almost any card name works
-        queries = [
-            f"name:{clean}*",
-            f"name:\"{clean}\"",
-            f"name:{clean.split()[0]}*",  # first word only
-            clean,
-        ]
+        # TCGdex search endpoint
+        url = "https://api.tcgdex.net/v2/en/cards"
         try:
             async with httpx.AsyncClient(timeout=20.0) as client:
-                for q in queries:
-                    r = await client.get(url, params={"q": q, "pageSize": limit, "orderBy": "-set.releaseDate"})
-                    if r.status_code != 200:
-                        continue
-                    data = r.json()
-                    for card in data.get("data", [])[:limit]:
-                        img = card.get("images", {}).get("large") or card.get("images", {}).get("small")
-                        results.append(CardResult(
-                            id=card.get("id", ""),
-                            name=card.get("name", clean),
-                            set_name=card.get("set", {}).get("name", ""),
-                            number=card.get("number", ""),
-                            game="pokemon",
-                            language="EN",
-                            image_url=img,
-                        ))
-                    if results:
-                        break
+                r = await client.get(url, params={"name": clean, "pagination:pageSize": limit})
+                if r.status_code != 200:
+                    # Fallback: try first word only
+                    first = clean.split()[0]
+                    r = await client.get(url, params={"name": first, "pagination:pageSize": limit})
+                if r.status_code != 200:
+                    return results
+                data = r.json()
+                # TCGdex returns a list of cards
+                cards = data if isinstance(data, list) else data.get("data", [])
+                for card in cards[:limit]:
+                    img = None
+                    images = card.get("image") or card.get("images") or {}
+                    if isinstance(images, dict):
+                        img = images.get("large") or images.get("small") or images.get("high")
+                    elif isinstance(images, str):
+                        img = images
+                    results.append(CardResult(
+                        id=card.get("id", ""),
+                        name=card.get("name", clean),
+                        set_name=card.get("set", {}).get("name", "") if isinstance(card.get("set"), dict) else "",
+                        number=str(card.get("localId") or card.get("number") or ""),
+                        game="pokemon",
+                        language="EN",
+                        image_url=img,
+                    ))
         except Exception:
             pass
         return results
