@@ -261,6 +261,13 @@ async def start_health_server():
 # ---------- Main ----------
 
 def main():
+    # Fix for Python 3.10+ / 3.12+ / 3.14 on Render (no default event loop)
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("pcstart", start))
