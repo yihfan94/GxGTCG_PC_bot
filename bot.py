@@ -14,8 +14,15 @@ import asyncio
 from pathlib import Path
 from aiohttp import web
 
-# Ensure project root is on the path (fixes Render ModuleNotFoundError)
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# ---- Force correct import path (Render fix) ----
+ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
+
+# Debug: show what files Render actually has
+print("=== DEBUG: files in project root ===")
+for item in sorted(ROOT.iterdir()):
+    print(" ", item.name, "(dir)" if item.is_dir() else "")
+print("===================================")
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
