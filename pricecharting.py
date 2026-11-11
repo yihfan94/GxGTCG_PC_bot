@@ -32,16 +32,17 @@ class PriceChartingProvider(BaseProvider):
         url = "https://api.tcgdex.net/v2/en/cards"
         try:
             async with httpx.AsyncClient(timeout=20.0) as client:
-                r = await client.get(url, params={"name": clean, "pagination:pageSize": limit})
-                if r.status_code != 200:
-                    # Fallback: try first word only
+                # Simple name filter works
+                r = await client.get(url, params={"name": clean})
+                if r.status_code != 200 or not r.json():
                     first = clean.split()[0]
-                    r = await client.get(url, params={"name": first, "pagination:pageSize": limit})
+                    r = await client.get(url, params={"name": first})
                 if r.status_code != 200:
                     return results
                 data = r.json()
                 # TCGdex returns a list of cards
                 cards = data if isinstance(data, list) else data.get("data", [])
+                cards = cards[:limit]
                 for card in cards[:limit]:
                     img = None
                     images = card.get("image") or card.get("images") or {}
