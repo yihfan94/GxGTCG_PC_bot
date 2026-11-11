@@ -9,8 +9,13 @@ can be kept awake by an uptime monitor.
 
 import logging
 import os
+import sys
 import asyncio
+from pathlib import Path
 from aiohttp import web
+
+# Ensure project root is on the path (fixes Render ModuleNotFoundError)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
