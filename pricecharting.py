@@ -24,8 +24,34 @@ class PriceChartingProvider(BaseProvider):
         "Accept": "text/html,application/xhtml+xml",
     }
 
+    async def _search_pokemontcg(self, query: str, limit: int = 8) -> list[CardResult]:
+        """Free fallback using the public Pokémon TCG API."""
+        results = []
+        url = "https://api.pokemontcg.io/v2/cards"
+        params = {"q": f"name:{query}*", "pageSize": limit}
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                r = await client.get(url, params=params)
+                if r.status_code != 200:
+                    return results
+                data = r.json()
+                for card in data.get("data", [])[:limit]:
+                    img = card.get("images", {}).get("large") or card.get("images", {}).get("small")
+                    results.append(CardResult(
+                        id=card.get("id", ""),
+                        name=card.get("name", query),
+                        set_name=card.get("set", {}).get("name", ""),
+                        number=card.get("number", ""),
+                        game="pokemon",
+                        language="EN",
+                        image_url=img,
+                    ))
+        except Exception:
+            pass
+        return results
+
     async def search(self, query: str, limit: int = 8) -> list[CardResult]:
-        """Search PriceCharting and return matching cards with images."""
+        """Search PriceCharting, fall back to Pokémon TCG API if needed."""
         results: list[CardResult] = []
         search_url = f"{self.BASE}/search-products?q={query}&type=prices"
 
@@ -71,6 +97,10 @@ class PriceChartingProvider(BaseProvider):
                         break
             except Exception:
                 pass
+
+        # Fallback for Pokémon cards if PriceCharting returned nothing
+        if not results:
+            results = await self._search_pokemontcg(query, limit)
 
         return results
 
