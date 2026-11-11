@@ -55,6 +55,58 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Optional: restrict bot to one topic (message_thread_id)
+ALLOWED_THREAD_ID = os.getenv("ALLOWED_THREAD_ID", "").strip()
+
+def is_allowed_topic(update: Update) -> bool:
+    """Return True if the message is in the allowed topic (or restriction is off)."""
+    global ALLOWED_THREAD_ID
+    # Prefer saved file if present
+    topic_file = Path(__file__).resolve().parent / "allowed_topic.txt"
+    if topic_file.exists():
+        ALLOWED_THREAD_ID = topic_file.read_text().strip()
+
+    if not ALLOWED_THREAD_ID:
+        return True
+    thread_id = getattr(update.effective_message, "message_thread_id", None)
+    return str(thread_id) == ALLOWED_THREAD_ID
+
+async def debug_thread(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reply with the current topic's thread ID."""
+    thread_id = getattr(update.effective_message, "message_thread_id", None)
+    chat_id = update.effective_chat.id
+    await update.message.reply_text(
+        f"Thread ID: `{thread_id}`\n"
+        f"Chat ID: `{chat_id}`\n\n"
+        "Or use /pcsettopic inside the topic to lock the bot to it.",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def set_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lock the bot to the current topic (same style as other project)."""
+    thread_id = getattr(update.effective_message, "message_thread_id", None)
+    if not thread_id:
+        await update.message.reply_text(
+            "This chat has no topics. Send /pcsettopic inside a topic."
+        )
+        return
+
+    # Save to a small local file so it survives restarts
+    topic_file = Path(__file__).resolve().parent / "allowed_topic.txt"
+    topic_file.write_text(str(thread_id))
+
+    # Also update the in-memory value
+    global ALLOWED_THREAD_ID
+    ALLOWED_THREAD_ID = str(thread_id)
+
+    await update.message.reply_text(
+        f"Bot is now restricted to this topic (Thread ID: `{thread_id}`).\n"
+        "It will ignore messages from other topics.",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
 # Providers
 pc = PriceChartingProvider()
 ebay = EbayProvider()
@@ -92,6 +144,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def search_cards(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str):
     """Core search logic – shows multiple results with photos when ambiguous."""
+    if not is_allowed_topic(update):
+        return
     query = normalize_query(query)
     if not query:
         await update.message.reply_text("Please type a card name.")
@@ -212,6 +266,8 @@ async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def text_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed_topic(update):
+        return
     if update.message.text.startswith("/"):
         return
 
@@ -266,6 +322,8 @@ async def text_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def photo_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle photo messages for card identification."""
+    if not is_allowed_topic(update):
+        return
     photo = update.message.photo[-1]  # highest resolution
     file = await context.bot.get_file(photo.file_id)
 
@@ -371,6 +429,8 @@ async def start_health_server():
 
 async def library_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Main library menu with buttons."""
+    if not is_allowed_topic(update):
+        return
     keyboard = [
         [InlineKeyboardButton("Add card", callback_data="lib:add")],
         [InlineKeyboardButton("View binders", callback_data="lib:binders")],
@@ -486,6 +546,8 @@ def main():
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("pcstart", start))
+    application.add_handler(CommandHandler("pcdebug", debug_thread))
+    application.add_handler(CommandHandler("pcsettopic", set_topic))
     application.add_handler(CommandHandler("pchelp", help_cmd))
     application.add_handler(CommandHandler("pc", price_command))
     application.add_handler(CommandHandler("pclibrary", library_menu))
