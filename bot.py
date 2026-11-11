@@ -47,6 +47,7 @@ except ModuleNotFoundError:
     from ebay import EbayProvider
     from snkrdunk import SnkrdunkProvider
     from search import normalize_query
+import library
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -73,7 +74,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`Charizard 151`\n"
         "`Luffy OP01-003`\n"
         "`Pikachu`\n\n"
-        "Or use /pc <card name>"
+        "Or use /pc <card name>\n\nYou can also send a photo of the card.\n\nLibrary: /pclibrary"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
@@ -213,7 +214,72 @@ async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def text_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text.startswith("/"):
         return
-    await search_cards(update, context, update.message.text)
+
+    awaiting = context.user_data.get("awaiting")
+    text = update.message.text.strip()
+
+    if awaiting == "add_name":
+        context.user_data["pending_name"] = text
+        context.user_data["awaiting"] = "add_price"
+        await update.message.reply_text("Bought price (e.g. 45.00):")
+        return
+
+    if awaiting == "add_price":
+        try:
+            price = float(text)
+        except ValueError:
+            await update.message.reply_text("Please enter a valid number.")
+            return
+        name = context.user_data.get("pending_name", "Unknown")
+        card_id = library.add_card(name=name, bought_price=price)
+        context.user_data.pop("awaiting", None)
+        context.user_data.pop("pending_name", None)
+        await update.message.reply_text(
+            f"Added '{name}' to Not in binder at ${price:.2f}.\nID: {card_id}"
+        )
+        return
+
+    if awaiting == "sold_id":
+        context.user_data["pending_sold_id"] = text
+        context.user_data["awaiting"] = "sold_price"
+        await update.message.reply_text("Sold price:")
+        return
+
+    if awaiting == "sold_price":
+        try:
+            sold_price = float(text)
+        except ValueError:
+            await update.message.reply_text("Please enter a valid number.")
+            return
+        card_id = context.user_data.get("pending_sold_id")
+        if library.mark_sold(card_id, sold_price):
+            await update.message.reply_text(f"Marked {card_id} as sold at ${sold_price:.2f}.")
+        else:
+            await update.message.reply_text("Card not found.")
+        context.user_data.pop("awaiting", None)
+        context.user_data.pop("pending_sold_id", None)
+        return
+
+    # Normal card search
+    await search_cards(update, context, text)
+
+
+async def photo_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle photo messages for card identification."""
+    photo = update.message.photo[-1]  # highest resolution
+    file = await context.bot.get_file(photo.file_id)
+
+    # Store file_id so we can re-send the user's photo later if needed
+    context.user_data["last_photo_file_id"] = photo.file_id
+
+    await update.message.reply_text(
+        "📷 Photo received!\n\n"
+        "I can search by name right now.\n"
+        "Please type the card name (e.g. `Charizard 151` or `Luffy OP01`) "
+        "and I will show matching cards with prices.\n\n"
+        "_Full automatic photo identification is coming — for now text search is the most accurate._",
+        parse_mode=ParseMode.MARKDOWN,
+    )
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -221,6 +287,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     data = query.data
+
+    # Price search selection
     if data.startswith("select:"):
         card_id = data.split(":", 1)[1]
         card = context.bot_data.get(card_id)
@@ -229,13 +297,54 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption="Card data expired. Please search again."
             )
             return
-
         try:
             await query.edit_message_reply_markup(reply_markup=None)
         except Exception:
             pass
-
         await send_full_price(update, context, card)
+        return
+
+    # Library menu actions
+    if data == "lib:add":
+        context.user_data["awaiting"] = "add_name"
+        await query.edit_message_text("Type the card name (e.g. Charizard 151):")
+        return
+
+    if data == "lib:binders":
+        binders = library.get_binders()
+        await query.edit_message_text("Binders:\n" + "\n".join(f"• {b}" for b in binders))
+        return
+
+    if data == "lib:summary":
+        cards = library.get_cards()
+        spent = sum(c["bought_price"] * c["quantity"] for c in cards)
+        sold = sum((c["sold_price"] or 0) * c["quantity"] for c in cards if c["sold_price"])
+        profit = sold - spent
+        margin = (profit / spent * 100) if spent else 0
+        text = (
+            f"*Library Summary*\n"
+            f"Total spent: ${spent:.2f}\n"
+            f"Total sold: ${sold:.2f}\n"
+            f"Total profit: ${profit:.2f}\n"
+            f"Margin: {margin:.1f}%"
+        )
+        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
+        return
+
+    if data == "lib:sold":
+        context.user_data["awaiting"] = "sold_id"
+        await query.edit_message_text("Type the card ID to mark as sold:")
+        return
+
+    if data == "lib:backup":
+        path = library.export_library()
+        await query.message.reply_document(
+            document=open(path, "rb"),
+            filename="library_backup.json",
+            caption="Your library backup."
+        )
+        await query.edit_message_text("Backup sent.")
+        return
 
 
 # ---------- Health check server (keeps Render Free awake) ----------
@@ -260,6 +369,112 @@ async def start_health_server():
 
 # ---------- Main ----------
 
+async def library_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Main library menu with buttons."""
+    keyboard = [
+        [InlineKeyboardButton("Add card", callback_data="lib:add")],
+        [InlineKeyboardButton("View binders", callback_data="lib:binders")],
+        [InlineKeyboardButton("Summary", callback_data="lib:summary")],
+        [InlineKeyboardButton("Mark sold", callback_data="lib:sold")],
+        [InlineKeyboardButton("Backup", callback_data="lib:backup")],
+    ]
+    await update.message.reply_text(
+        "*Library Menu*\nChoose an action:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def binder_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    binders = library.get_binders()
+    await update.message.reply_text("Binders:\n" + "\n".join(f"• {b}" for b in binders))
+
+
+async def binder_create(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: /pcbinder create <name>")
+        return
+    name = " ".join(context.args)
+    if library.add_binder(name):
+        await update.message.reply_text(f"Binder '{name}' created.")
+    else:
+        await update.message.reply_text("Binder already exists or is reserved.")
+
+
+async def library_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "Usage: /pcadd <card name> <bought price>\n"
+            "Example: /pcadd Charizard 151 45.00"
+        )
+        return
+    try:
+        price = float(context.args[-1])
+        name = " ".join(context.args[:-1])
+    except ValueError:
+        await update.message.reply_text("Bought price must be a number.")
+        return
+    card_id = library.add_card(name=name, bought_price=price)
+    await update.message.reply_text(
+        f"Added '{name}' to Not in binder at ${price:.2f}.\nID: {card_id}"
+    )
+
+
+async def library_sold(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 2:
+        await update.message.reply_text("Usage: /pcsold <card_id> <sold price>")
+        return
+    card_id = context.args[0]
+    try:
+        sold_price = float(context.args[1])
+    except ValueError:
+        await update.message.reply_text("Sold price must be a number.")
+        return
+    if library.mark_sold(card_id, sold_price):
+        await update.message.reply_text(f"Marked {card_id} as sold at ${sold_price:.2f}.")
+    else:
+        await update.message.reply_text("Card not found.")
+
+
+async def library_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cards = library.get_cards()
+    spent = sum(c["bought_price"] * c["quantity"] for c in cards)
+    sold = sum((c["sold_price"] or 0) * c["quantity"] for c in cards if c["sold_price"])
+    profit = sold - spent
+    margin = (profit / spent * 100) if spent else 0
+    text = (
+        f"*Library Summary*\n"
+        f"Total spent: ${spent:.2f}\n"
+        f"Total sold: ${sold:.2f}\n"
+        f"Total profit: ${profit:.2f}\n"
+        f"Margin: {margin:.1f}%"
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+
+async def tradeshow_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 3:
+        await update.message.reply_text(
+            "Usage: /pctradeshow add <name> <YYYY-MM-DD> <YYYY-MM-DD>"
+        )
+        return
+    name = context.args[0]
+    start, end = context.args[1], context.args[2]
+    if library.add_tradeshow(name, start, end):
+        await update.message.reply_text(f"Tradeshow '{name}' saved ({start} to {end}).")
+    else:
+        await update.message.reply_text("Tradeshow name already exists.")
+
+
+async def backup_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    path = library.export_library()
+    await update.message.reply_document(
+        document=open(path, "rb"),
+        filename="library_backup.json",
+        caption="Your library backup. Keep this file safe."
+    )
+
+
 def main():
     # Fix for Python 3.10+ / 3.12+ / 3.14 on Render (no default event loop)
     try:
@@ -273,9 +488,20 @@ def main():
     application.add_handler(CommandHandler("pcstart", start))
     application.add_handler(CommandHandler("pchelp", help_cmd))
     application.add_handler(CommandHandler("pc", price_command))
+    application.add_handler(CommandHandler("pclibrary", library_menu))
+    application.add_handler(CommandHandler("pcbinder", binder_list))
+    application.add_handler(CommandHandler("pcbindercreate", binder_create))
+    application.add_handler(CommandHandler("pcadd", library_add))
+    application.add_handler(CommandHandler("pcsold", library_sold))
+    application.add_handler(CommandHandler("pcsummary", library_summary))
+    application.add_handler(CommandHandler("pctradeshow", tradeshow_add))
+    application.add_handler(CommandHandler("pcbackup", backup_export))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, text_search)
+    )
+    application.add_handler(
+        MessageHandler(filters.PHOTO, photo_search)
     )
 
     # Start health server + Telegram polling together

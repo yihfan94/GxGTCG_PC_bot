@@ -1,11 +1,11 @@
 """
-PriceCharting provider (placeholder).
-
-Later you can replace the mock data with:
-- Official PriceCharting API (paid)
-- Apify actors
-- Careful scraping (needs Cloudflare bypass)
+PriceCharting provider — free light-personal-use version.
+Uses public search + product pages. No paid API required.
 """
+
+import re
+import httpx
+from bs4 import BeautifulSoup
 
 try:
     from .base import BaseProvider, CardResult
@@ -18,67 +18,109 @@ except ImportError:
 class PriceChartingProvider(BaseProvider):
     name = "PriceCharting"
 
+    BASE = "https://www.pricecharting.com"
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (compatible; TCGPriceBot/1.0; +https://github.com)",
+        "Accept": "text/html,application/xhtml+xml",
+    }
+
     async def search(self, query: str, limit: int = 8) -> list[CardResult]:
-        # TODO: Real search against PriceCharting
-        # For now return a couple of realistic mock results so the bot works end-to-end
-        q = query.lower()
-        results = []
+        """Search PriceCharting and return matching cards with images."""
+        results: list[CardResult] = []
+        search_url = f"{self.BASE}/search-products?q={query}&type=prices"
 
-        if "charizard" in q or "151" in q:
-            results.append(CardResult(
-                id="pc-charizard-sv2a-201",
-                name="Charizard ex SAR",
-                set_name="Pokémon Card 151 (SV2a)",
-                number="201/165",
-                game="pokemon",
-                language="JP",
-                image_url="https://images.pokemontcg.io/sv2a/201_hires.png",
-                pc_ungraded_en=85.00,
-                pc_ungraded_jp=120.00,
-            ))
-            results.append(CardResult(
-                id="pc-charizard-base-4",
-                name="Charizard",
-                set_name="Base Set",
-                number="4/102",
-                game="pokemon",
-                language="EN",
-                image_url="https://images.pokemontcg.io/base1/4_hires.png",
-                pc_ungraded_en=320.00,
-                pc_ungraded_jp=None,
-            ))
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True, headers=self.HEADERS) as client:
+            try:
+                r = await client.get(search_url)
+                if r.status_code != 200:
+                    return results
+                soup = BeautifulSoup(r.text, "lxml")
 
-        if "luffy" in q or "op01" in q:
-            results.append(CardResult(
-                id="pc-luffy-op01-003",
-                name="Monkey D. Luffy",
-                set_name="Romance Dawn (OP01)",
-                number="OP01-003",
-                game="onepiece",
-                language="EN",
-                image_url="https://limitlesstcg.s3.us-east-2.amazonaws.com/one-piece/OP01/OP01-003_en_M.png",
-                pc_ungraded_en=12.50,
-                pc_ungraded_jp=18.00,
-            ))
+                # Product links on search results
+                for a in soup.select("a[href*='/game/']")[:limit * 2]:
+                    href = a.get("href", "")
+                    if not href or "/game/" not in href:
+                        continue
+                    full_url = href if href.startswith("http") else self.BASE + href
+                    name = a.get_text(strip=True)
+                    if not name or len(name) < 3:
+                        continue
 
-        if not results:
-            # Generic fallback so the bot never returns empty during development
-            results.append(CardResult(
-                id="pc-demo-1",
-                name=f"[Demo] {query.title()}",
-                set_name="Demo Set",
-                number="001",
-                game="pokemon",
-                language="EN",
-                image_url="https://images.pokemontcg.io/base1/4_hires.png",
-                pc_ungraded_en=25.00,
-                pc_ungraded_jp=30.00,
-            ))
+                    # Try to get image from the link or nearby
+                    img = a.find("img")
+                    image_url = None
+                    if img and img.get("src"):
+                        image_url = img["src"]
+                        if image_url.startswith("//"):
+                            image_url = "https:" + image_url
+                        elif image_url.startswith("/"):
+                            image_url = self.BASE + image_url
 
-        return results[:limit]
+                    card = CardResult(
+                        id=full_url,
+                        name=name,
+                        set_name="",  # filled on detail fetch if needed
+                        game="pokemon" if "pokemon" in query.lower() or "pokémon" in query.lower() else "",
+                        language="EN",
+                        image_url=image_url,
+                    )
+                    # Avoid duplicates
+                    if not any(c.id == card.id for c in results):
+                        results.append(card)
+                    if len(results) >= limit:
+                        break
+            except Exception:
+                pass
+
+        return results
 
     async def get_prices(self, card: CardResult) -> CardResult:
-        # In real implementation you would fetch latest prices here
+        """Fetch ungraded EN price from the product page."""
+        if not card.id or not card.id.startswith("http"):
+            return card
+
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True, headers=self.HEADERS) as client:
+            try:
+                r = await client.get(card.id)
+                if r.status_code != 200:
+                    return card
+                soup = BeautifulSoup(r.text, "lxml")
+
+                # Look for ungraded price (common patterns)
+                price_text = None
+                for selector in [
+                    "td.price",
+                    ".price",
+                    "[data-price]",
+                    "span.price",
+                ]:
+                    el = soup.select_one(selector)
+                    if el:
+                        price_text = el.get_text(strip=True)
+                        break
+
+                if price_text:
+                    # Extract number
+                    m = re.search(r"[\d,]+\.?\d*", price_text.replace(",", ""))
+                    if m:
+                        try:
+                            card.pc_ungraded_en = float(m.group())
+                        except ValueError:
+                            pass
+
+                # Try to improve image if missing
+                if not card.image_url:
+                    img = soup.select_one("img[src*='pricecharting'], img.product-image, #product-image img")
+                    if img and img.get("src"):
+                        src = img["src"]
+                        if src.startswith("//"):
+                            src = "https:" + src
+                        elif src.startswith("/"):
+                            src = self.BASE + src
+                        card.image_url = src
+            except Exception:
+                pass
+
         return card
 
     def format_prices(self, card: CardResult) -> str:
