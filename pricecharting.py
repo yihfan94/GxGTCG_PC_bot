@@ -7,8 +7,12 @@ Later you can replace the mock data with:
 - Careful scraping (needs Cloudflare bypass)
 """
 
-from .base import BaseProvider, CardResult
-from utils.currency import format_price
+try:
+    from .base import BaseProvider, CardResult
+    from utils.currency import format_price
+except ImportError:
+    from base import BaseProvider, CardResult
+    from currency import format_price
 
 
 class PriceChartingProvider(BaseProvider):

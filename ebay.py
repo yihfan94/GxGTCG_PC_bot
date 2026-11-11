@@ -6,8 +6,12 @@ Real implementation options:
 - Construct sold search URLs + careful scraping (fragile)
 """
 
-from .base import BaseProvider, CardResult
-from utils.currency import format_price
+try:
+    from .base import BaseProvider, CardResult
+    from utils.currency import format_price
+except ImportError:
+    from base import BaseProvider, CardResult
+    from currency import format_price
 
 
 class EbayProvider(BaseProvider):

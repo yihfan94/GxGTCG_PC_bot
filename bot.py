@@ -36,8 +36,17 @@ from telegram.ext import (
 from telegram.constants import ParseMode
 
 from config import TELEGRAM_BOT_TOKEN
-from providers import PriceChartingProvider, EbayProvider, SnkrdunkProvider
-from utils.search import normalize_query
+
+# Support both normal folder structure and flattened upload (current Render situation)
+try:
+    from providers import PriceChartingProvider, EbayProvider, SnkrdunkProvider
+    from utils.search import normalize_query
+except ModuleNotFoundError:
+    # Files were uploaded flat (no providers/ or utils/ folders)
+    from pricecharting import PriceChartingProvider
+    from ebay import EbayProvider
+    from snkrdunk import SnkrdunkProvider
+    from search import normalize_query
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",

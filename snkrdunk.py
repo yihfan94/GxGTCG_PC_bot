@@ -5,8 +5,12 @@ Best long-term option: ReefAPI SNKRDUNK endpoints
 (search + prices_by_condition for grades A/B/C/D).
 """
 
-from .base import BaseProvider, CardResult
-from utils.currency import format_price, jpy_to_usd
+try:
+    from .base import BaseProvider, CardResult
+    from utils.currency import format_price, jpy_to_usd
+except ImportError:
+    from base import BaseProvider, CardResult
+    from currency import format_price, jpy_to_usd
 
 
 class SnkrdunkProvider(BaseProvider):
