@@ -25,33 +25,50 @@ class PriceChartingProvider(BaseProvider):
     }
 
     async def _search_pokemontcg(self, query: str, limit: int = 8) -> list[CardResult]:
-        """Free fallback using the public Pokémon TCG API."""
+        """Free search of all printed Pokémon cards via the public API."""
         results = []
         url = "https://api.pokemontcg.io/v2/cards"
-        params = {"q": f"name:{query}*", "pageSize": limit}
+        # Clean the query a bit
+        clean = " ".join(query.split())
+        # Try several query styles so almost any card name works
+        queries = [
+            f"name:{clean}*",
+            f"name:\"{clean}\"",
+            f"name:{clean.split()[0]}*",  # first word only
+            clean,
+        ]
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                r = await client.get(url, params=params)
-                if r.status_code != 200:
-                    return results
-                data = r.json()
-                for card in data.get("data", [])[:limit]:
-                    img = card.get("images", {}).get("large") or card.get("images", {}).get("small")
-                    results.append(CardResult(
-                        id=card.get("id", ""),
-                        name=card.get("name", query),
-                        set_name=card.get("set", {}).get("name", ""),
-                        number=card.get("number", ""),
-                        game="pokemon",
-                        language="EN",
-                        image_url=img,
-                    ))
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                for q in queries:
+                    r = await client.get(url, params={"q": q, "pageSize": limit, "orderBy": "-set.releaseDate"})
+                    if r.status_code != 200:
+                        continue
+                    data = r.json()
+                    for card in data.get("data", [])[:limit]:
+                        img = card.get("images", {}).get("large") or card.get("images", {}).get("small")
+                        results.append(CardResult(
+                            id=card.get("id", ""),
+                            name=card.get("name", clean),
+                            set_name=card.get("set", {}).get("name", ""),
+                            number=card.get("number", ""),
+                            game="pokemon",
+                            language="EN",
+                            image_url=img,
+                        ))
+                    if results:
+                        break
         except Exception:
             pass
         return results
 
     async def search(self, query: str, limit: int = 8) -> list[CardResult]:
-        """Search PriceCharting, fall back to Pokémon TCG API if needed."""
+        """Search all Pokémon cards (Pokémon TCG API first, then PriceCharting)."""
+        # Prefer the free API that covers all printed cards
+        results = await self._search_pokemontcg(query, limit)
+        if results:
+            return results
+
+        # Fallback to PriceCharting scrape
         results: list[CardResult] = []
         search_url = f"{self.BASE}/search-products?q={query}&type=prices"
 
