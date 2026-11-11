@@ -42,7 +42,17 @@ class PriceChartingProvider(BaseProvider):
                 data = r.json()
                 # TCGdex returns a list of cards
                 cards = data if isinstance(data, list) else data.get("data", [])
-                cards = cards[:limit]
+                # Prefer cards that match a number in the query
+                import re
+                num_match = re.search(r'\b(\d{1,4})\b', clean)
+                if num_match:
+                    want = num_match.group(1).lstrip("0") or "0"
+                    def score(c):
+                        num = str(c.get("localId") or c.get("number") or "")
+                        n = num.lstrip("0") or "0"
+                        return 0 if n == want else 1
+                    cards.sort(key=score)
+                cards = [c for c in cards if c.get('image')][:limit] or cards[:limit]
                 for card in cards[:limit]:
                     img = None
                     images = card.get("image") or card.get("images") or {}

@@ -153,7 +153,7 @@ async def search_cards(update: Update, context: ContextTypes.DEFAULT_TYPE, query
 
     await update.message.reply_chat_action("typing")
 
-    results = await pc.search(query, limit=6)
+    results = await pc.search(query, limit=4)
 
     if not results:
         await update.message.reply_text(
@@ -174,11 +174,16 @@ async def search_cards(update: Update, context: ContextTypes.DEFAULT_TYPE, query
     )
 
     for card in results:
+        # Escape markdown special chars to avoid parse errors
+        safe_name = card.name.replace("_", "\\_").replace("*", "\\*").replace("[", "\\[")
+        safe_set = (card.set_name or "").replace("_", "\\_").replace("*", "\\*")
         caption = (
-            f"*{card.name}*\n"
-            f"{card.set_name}  {card.number}\n"
+            f"*{safe_name}*\n"
+            f"{safe_set}  {card.number}\n"
             f"Game: {card.game.title()} | Lang: {card.language}"
         )
+        if not card.image_url:
+            caption += "\n(image unavailable)"
         keyboard = InlineKeyboardMarkup(
             [[InlineKeyboardButton("✅ Select this card", callback_data=f"select:{card.id}")]]
         )
@@ -210,20 +215,33 @@ async def search_cards(update: Update, context: ContextTypes.DEFAULT_TYPE, query
 
 async def send_full_price(update: Update, context: ContextTypes.DEFAULT_TYPE, card):
     """Fetch prices from all sources and send photo + caption."""
-    card = await ebay.get_prices(card)
-    card = await snkr.get_prices(card)
-    card = await pc.get_prices(card)
+    try:
+        card = await ebay.get_prices(card)
+    except Exception:
+        pass
+    try:
+        card = await snkr.get_prices(card)
+    except Exception:
+        pass
+    try:
+        card = await pc.get_prices(card)
+    except Exception:
+        pass
+
+    # Escape markdown
+    safe_name = (card.name or "").replace("_", "\\_").replace("*", "\\*").replace("[", "\\[")
+    safe_set = (card.set_name or "").replace("_", "\\_").replace("*", "\\*")
 
     caption_parts = [
-        f"*{card.name}*",
-        f"{card.set_name}  •  {card.number}",
+        f"*{safe_name}*",
+        f"{safe_set}  •  {card.number}",
         f"Game: {card.game.title()} | Language: {card.language}",
         "",
-        pc.format_prices(card),
+        pc.format_prices(card) or "PriceCharting: not found",
         "",
-        ebay.format_prices(card),
+        ebay.format_prices(card) or "eBay: not found",
         "",
-        snkr.format_prices(card),
+        snkr.format_prices(card) or "SNKRDUNK: not found",
     ]
     caption = "\n".join(caption_parts)
 
@@ -351,15 +369,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         card_id = data.split(":", 1)[1]
         card = context.bot_data.get(card_id)
         if not card:
-            await query.edit_message_caption(
-                caption="Card data expired. Please search again."
-            )
+            try:
+                await query.edit_message_text("Card data expired. Please search again.")
+            except Exception:
+                await query.message.reply_text("Card data expired. Please search again.")
             return
         try:
             await query.edit_message_reply_markup(reply_markup=None)
         except Exception:
             pass
-        await send_full_price(update, context, card)
+        try:
+            await send_full_price(update, context, card)
+        except Exception as e:
+            await query.message.reply_text(f"Could not load prices: {e}")
         return
 
     # Library menu actions
